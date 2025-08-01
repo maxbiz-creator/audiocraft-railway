@@ -346,8 +346,12 @@ app.get('/api/health', async (req, res) => {
   });
 });
 
-// 🔧 FIXED: Only serve frontend HTML for non-API routes
-app.get(/^(?!\/api).*/, (req, res) => {
+// 🔧 FIXED: Explicit handling for non-API routes only
+app.get('*', (req, res) => {
+  // Don't serve HTML for API routes - let them 404 properly
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ message: 'API endpoint not found' });
+  }
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
