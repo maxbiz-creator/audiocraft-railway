@@ -36,6 +36,11 @@ const generateToken = (userId) => {
 // Helper: Check if FFmpeg is available
 const checkFFmpeg = () => {
   return new Promise((resolve) => {
+    // Set FFmpeg path if provided
+    if (process.env.FFMPEG_PATH) {
+      ffmpeg.setFfmpegPath(process.env.FFMPEG_PATH);
+    }
+    
     ffmpeg.getAvailableFormats((err, formats) => {
       if (err) {
         console.log('⚠️  FFmpeg not available, using simulation mode');
@@ -286,7 +291,7 @@ app.post('/api/audio/enhance', upload.single('audio'), async (req, res) => {
             } catch (cleanupError) {
               console.error('Cleanup error:', cleanupError);
             }
-          }, 60000); // Clean up after 1 minute
+          }, 30000); // Clean up after 30 seconds (reduced from 60s)
         });
         
       } catch (processingError) {
@@ -314,7 +319,7 @@ app.post('/api/audio/enhance', upload.single('audio'), async (req, res) => {
         
         setTimeout(async () => {
           await fs.unlink(inputPath).catch(console.error);
-        }, 60000);
+        }, 30000);
       });
     }
     
@@ -341,8 +346,8 @@ app.get('/api/health', async (req, res) => {
   });
 });
 
-// Serve frontend for all other routes
-app.get('*', (req, res) => {
+// 🔧 FIXED: Only serve frontend HTML for non-API routes
+app.get(/^(?!\/api).*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
