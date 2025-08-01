@@ -2,7 +2,7 @@
 nixPkgs = ['nodejs', 'ffmpeg-full', 'sox']
 
 [phases.install]
-cmds = ['npm ci']
+cmds = ['npm install']  # Changed from npm ci
 
 [phases.build]
 cmds = ['echo "AudioCraft Studio build complete"']
