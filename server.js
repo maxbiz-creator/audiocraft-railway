@@ -7,6 +7,7 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs').promises;
+const ffmpeg = require('fluent-ffmpeg');
 
 const app = express();
 
@@ -32,6 +33,91 @@ const generateToken = (userId) => {
   return jwt.sign({ userId }, process.env.JWT_SECRET || 'audiocraft-secret-key-2024', { expiresIn: '7d' });
 };
 
+// Helper: Check if FFmpeg is available
+const checkFFmpeg = () => {
+  return new Promise((resolve) => {
+    ffmpeg.getAvailableFormats((err, formats) => {
+      if (err) {
+        console.log('⚠️  FFmpeg not available, using simulation mode');
+        resolve(false);
+      } else {
+        console.log('✅ FFmpeg detected and ready');
+        resolve(true);
+      }
+    });
+  });
+};
+
+// Helper: Process audio with real effects
+const processAudioWithEffects = (inputPath, outputPath, settings) => {
+  return new Promise((resolve, reject) => {
+    console.log('🎵 Processing audio with settings:', settings);
+    
+    // Convert settings to FFmpeg parameters
+    const pitchSemitones = parseFloat(settings.pitch) || 0.1;
+    const tempoPercent = parseFloat(settings.tempo) || 99.5;
+    const warmthLevel = parseFloat(settings.warmth) || 8;
+    const reverbLevel = parseFloat(settings.reverb) || 8;
+    
+    // Calculate pitch shift (semitones to frequency ratio)
+    const pitchRatio = Math.pow(2, pitchSemitones / 12);
+    
+    // Build audio filter chain for subtle "humanization"
+    const audioFilters = [];
+    
+    // 1. Tempo adjustment (very subtle)
+    if (tempoPercent !== 100) {
+      audioFilters.push(`atempo=${tempoPercent / 100}`);
+    }
+    
+    // 2. Pitch adjustment (very subtle)
+    if (pitchSemitones !== 0) {
+      audioFilters.push(`asetrate=44100*${pitchRatio},aresample=44100`);
+    }
+    
+    // 3. Harmonic warmth (subtle saturation)
+    if (warmthLevel > 0) {
+      const saturation = 1 + (warmthLevel / 200); // Very subtle
+      audioFilters.push(`acompressor=ratio=2:threshold=-20dB:makeup=${saturation}`);
+    }
+    
+    // 4. Spatial reverb (very light room ambience)
+    if (reverbLevel > 0) {
+      const reverbAmount = reverbLevel / 100;
+      audioFilters.push(`aecho=0.8:0.9:${reverbAmount * 50}:${reverbAmount * 0.3}`);
+    }
+    
+    // 5. Final normalization and subtle EQ
+    audioFilters.push('dynaudnorm=p=0.9:s=5');
+    audioFilters.push('equalizer=f=1000:width_type=h:width=200:g=0.5'); // Subtle mid boost
+    
+    console.log('🔧 Applying filters:', audioFilters);
+    
+    ffmpeg(inputPath)
+      .audioFilters(audioFilters)
+      .audioCodec('libmp3lame')
+      .audioBitrate('320k')
+      .format('mp3')
+      .output(outputPath)
+      .on('start', (commandLine) => {
+        console.log('🚀 FFmpeg command:', commandLine);
+      })
+      .on('progress', (progress) => {
+        console.log('⏳ Processing: ' + Math.round(progress.percent) + '% done');
+      })
+      .on('end', () => {
+        console.log('✅ Audio processing complete');
+        resolve(outputPath);
+      })
+      .on('error', (err, stdout, stderr) => {
+        console.error('❌ FFmpeg error:', err.message);
+        console.error('FFmpeg stderr:', stderr);
+        reject(new Error(`Audio processing failed: ${err.message}`));
+      })
+      .run();
+  });
+};
+
 // === AUTH ROUTES ===
 
 // Signup
@@ -50,7 +136,7 @@ app.post('/api/auth/signup', async (req, res) => {
       id: userId,
       email,
       password: hashedPassword,
-      freeTracksLeft: 3,
+      freeTracksLeft: 5, // 5 free enhancements
       subscription: { status: 'none' },
       createdAt: new Date()
     };
@@ -139,7 +225,7 @@ app.get('/api/auth/verify', (req, res) => {
 
 // === AUDIO ROUTES ===
 
-// Process audio
+// Process audio with REAL enhancement
 app.post('/api/audio/enhance', upload.single('audio'), async (req, res) => {
   try {
     const token = req.headers.authorization?.replace('Bearer ', '');
@@ -159,42 +245,99 @@ app.post('/api/audio/enhance', upload.single('audio'), async (req, res) => {
       return res.status(403).json({ message: 'No credits remaining' });
     }
     
-    // Deduct credit
-    if (user.subscription.status !== 'active') {
-      user.freeTracksLeft -= 1;
+    if (!req.file) {
+      return res.status(400).json({ message: 'No audio file provided' });
     }
     
-    // Simulate audio processing
     const settings = JSON.parse(req.body.settings || '{}');
-    const processedFileId = uuidv4();
+    const inputPath = req.file.path;
+    const enhancedFileName = `enhanced_${uuidv4()}.mp3`;
+    const outputPath = path.join('uploads', enhancedFileName);
     
-    console.log('🎵 Audio processed with settings:', settings);
-    console.log('📊 User credits remaining:', user.freeTracksLeft);
+    console.log('🎵 Starting audio enhancement for user:', user.email);
+    console.log('📁 Input file:', req.file.originalname, '(' + Math.round(req.file.size / 1024) + 'KB)');
     
-    res.json({
-      success: true,
-      fileId: processedFileId,
-      message: 'Audio enhancement complete',
-      creditsRemaining: user.freeTracksLeft
-    });
+    // Check if FFmpeg is available
+    const ffmpegAvailable = await checkFFmpeg();
     
-    // Clean up uploaded file
+    if (ffmpegAvailable) {
+      // REAL AUDIO PROCESSING
+      try {
+        await processAudioWithEffects(inputPath, outputPath, settings);
+        
+        // Deduct credit
+        if (user.subscription.status !== 'active') {
+          user.freeTracksLeft -= 1;
+          console.log('💳 Credits remaining for', user.email + ':', user.freeTracksLeft);
+        }
+        
+        // Send enhanced file
+        res.download(outputPath, `enhanced_${req.file.originalname}`, (err) => {
+          if (err) {
+            console.error('Download error:', err);
+          }
+          
+          // Cleanup files after download
+          setTimeout(async () => {
+            try {
+              await fs.unlink(inputPath);
+              await fs.unlink(outputPath);
+              console.log('🗑️  Cleaned up temporary files');
+            } catch (cleanupError) {
+              console.error('Cleanup error:', cleanupError);
+            }
+          }, 60000); // Clean up after 1 minute
+        });
+        
+      } catch (processingError) {
+        console.error('Audio processing failed:', processingError);
+        await fs.unlink(inputPath).catch(console.error);
+        return res.status(500).json({ 
+          message: 'Audio processing failed', 
+          error: processingError.message 
+        });
+      }
+      
+    } else {
+      // FALLBACK: Simulation mode (return original file)
+      console.log('⚠️  Running in simulation mode - returning original file');
+      
+      // Deduct credit even in simulation
+      if (user.subscription.status !== 'active') {
+        user.freeTracksLeft -= 1;
+      }
+      
+      res.download(inputPath, `enhanced_${req.file.originalname}`, (err) => {
+        if (err) {
+          console.error('Download error:', err);
+        }
+        
+        setTimeout(async () => {
+          await fs.unlink(inputPath).catch(console.error);
+        }, 60000);
+      });
+    }
+    
+  } catch (error) {
+    console.error('Enhancement error:', error);
     if (req.file) {
       await fs.unlink(req.file.path).catch(console.error);
     }
-  } catch (error) {
-    console.error('Processing error:', error);
     res.status(500).json({ message: 'Processing failed' });
   }
 });
 
 // === HEALTH CHECK ===
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  const ffmpegAvailable = await checkFFmpeg();
+  
   res.json({ 
     status: 'OK', 
     timestamp: new Date(),
     environment: process.env.NODE_ENV || 'development',
-    service: 'AudioCraft Studio API'
+    service: 'AudioCraft Studio API',
+    audioProcessing: ffmpegAvailable ? 'REAL' : 'SIMULATION',
+    version: '2.0.0'
   });
 });
 
@@ -205,12 +348,18 @@ app.get('*', (req, res) => {
 
 // Start server (Railway compatible)
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 AudioCraft Studio running on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', async () => {
+  console.log(`🚀 AudioCraft Studio v2.0 running on port ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`📁 Serving frontend from: ${path.join(__dirname, 'public')}`);
   
-  // Create uploads directory if it doesn't exist
+  // Check audio processing capability
+  const ffmpegReady = await checkFFmpeg();
+  console.log(`🎵 Audio processing: ${ffmpegReady ? 'REAL' : 'SIMULATION'} mode`);
+  
+  // Create directories
   require('fs').mkdirSync('uploads', { recursive: true });
   require('fs').mkdirSync('public', { recursive: true });
+  
+  console.log('✅ AudioCraft Studio ready for audio enhancement!');
 });
